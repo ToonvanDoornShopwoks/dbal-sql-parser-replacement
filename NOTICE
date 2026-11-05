@@ -1,0 +1,3 @@
+This software contains code from:
+
+* Doctrine DBAL 4.4.5 (src/SQL/Parser.php, tests/SQL/ParserTest.php), MIT, https://github.com/doctrine/dbal

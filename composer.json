@@ -1,0 +1,25 @@
+{
+    "name": "toonvandoornshopwoks/dbal-sql-parser-replacement",
+    "description": "Faster drop-in replacement for the Doctrine DBAL 4 SQL parameter parser (fewer preg_match calls on long Shopware queries).",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["doctrine", "dbal", "performance", "shopware"],
+    "autoload": {
+        "files": ["src/SQL/Parser.php"]
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "DbalSqlParserReplacement\\Tests\\": "tests/"
+        }
+    },
+    "require": {
+        "php": ">=8.2",
+        "doctrine/dbal": ">=4.3.0 <4.6.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.5"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}
