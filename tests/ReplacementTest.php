@@ -72,16 +72,60 @@ final class ReplacementTest extends TestCase
             'INSERT INTO `t` (`a`, `b`) VALUES ' . implode(', ', array_fill(0, 60000, "(?, 'value-with-some-length')")),
         ];
 
+        // Upstream's MySQL string literal costs one PCRE backtrack frame per byte. With one token per
+        // call it survives ~6 KB per literal; batching 64 tokens per call would share that budget
+        // across all 64 literals (~179 bytes each) unless the literal pattern is stack-free.
+        yield '64 adjacent 1 KB string literals, MySQL escaping' => [
+            'INSERT INTO `t` (`description`) VALUES '
+                . implode(', ', array_fill(0, 64, "('" . str_repeat('lorem ipsum \\\' dolor \\\\ sit amet ', 32) . "')"))
+                . ' ON DUPLICATE KEY UPDATE `updated_at` = :now',
+        ];
+
+        yield '64 adjacent 1 KB double-quoted literals' => [
+            'SELECT ' . implode(', ', array_fill(0, 64, '"' . str_repeat('x\\"y', 256) . '"')) . ' WHERE a = ?',
+        ];
+
         mt_srand(1804);
         $alphabet = ['`x`', '`y` ', ':n', ':n_1', '?', '??', "'s'", "'a?'", '"d"', '-', '--c', "\n", '/*c*/', '/', '[', ']', 'ARRAY[1]', '::', ' ', 'SELECT ', ',', '\\', "'\\''", 'a'];
-        for ($case = 0; $case < 200; $case++) {
+        yield from self::randomSoups('random', $alphabet, 200, 300);
+
+        // The literal pattern is rewritten (possessive, stack-free), so hammer quote and backslash
+        // combinations specifically: unterminated quotes, trailing backslashes, escaped delimiters.
+        $quotes = ["'", '"', '\\', "\\'", '\\"', '\\\\', "''", '""', 'a', ' ', ':p', '?', '`x`', "\n", '--c', '/*c*/', ',', '::'];
+        yield from self::randomSoups('quote soup', $quotes, 2000, 40);
+    }
+
+    /**
+     * The replacement must not fail where upstream succeeds, and the rewritten literal pattern also
+     * lifts upstream's own limit: a single MySQL literal above ~6 KB exhausts the JIT stack upstream.
+     */
+    public function testLargeMySQLStringLiteralsDoNotExhaustThePcreStack(): void
+    {
+        $literal = "'" . str_repeat(str_repeat('x', 62) . '\\\'', 1024) . "'"; // 64 KB, 1,024 escapes
+        $literals = 'SELECT ' . implode(', ', array_fill(0, 64, $literal)) . ' WHERE a = ';
+
+        $visitor = new RecordingVisitor();
+        (new Parser(true))->parse($literals . ':p AND b = ?', $visitor);
+
+        self::assertSame([':p', '?'], $visitor->parameters);
+        self::assertSame($literals . '{:p} AND b = {?}', $visitor->result());
+    }
+
+    /**
+     * @param list<string> $alphabet
+     *
+     * @return iterable<string, array{string}>
+     */
+    private static function randomSoups(string $prefix, array $alphabet, int $cases, int $maxLength): iterable
+    {
+        for ($case = 0; $case < $cases; $case++) {
             $sql    = '';
-            $length = mt_rand(1, 300);
+            $length = mt_rand(1, $maxLength);
             for ($i = 0; $i < $length; $i++) {
                 $sql .= $alphabet[mt_rand(0, count($alphabet) - 1)];
             }
 
-            yield 'random #' . $case => [$sql];
+            yield $prefix . ' #' . $case => [$sql];
         }
     }
 }

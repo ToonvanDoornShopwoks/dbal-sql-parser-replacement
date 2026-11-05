@@ -6,7 +6,8 @@ namespace Doctrine\DBAL\SQL;
 
 // Drop-in replacement for doctrine/dbal 4.3-4.5 src/SQL/Parser.php, loaded early through Composer
 // "files" autoloading so it is declared before Composer could load the vendor copy.
-// Only the OTHER constant and the "other" group of $tokenPattern differ from upstream 4.4.5.
+// Only the OTHER constant, the "other" group of $tokenPattern and the MySQL string literal pattern
+// differ from upstream 4.4.5.
 
 use Doctrine\DBAL\SQL\Parser\Exception;
 use Doctrine\DBAL\SQL\Parser\Exception\RegularExpressionError;
@@ -77,10 +78,11 @@ final class Parser
             . '(?P<named>' . self::NAMED_PARAMETER . ')'
             . '|(?P<positional>' . self::POSITIONAL_PARAMETER . ')'
             // Consume up to 64 non-parameter tokens per preg_match() call instead of one.
-            // Shopware's long SELECT lists are hundreds of backtick identifiers, so this cuts ~94% of the
-            // calls. No sqlPattern alternative can start where a parameter starts, so output is unchanged.
-            // Bounded on purpose: an unbounded run exhausts the PCRE JIT stack on multi-MB SQL, and caps
-            // of 256+ exceed PCRE's compiled pattern size limit.
+            // Shopware's long SELECT lists are hundreds of backtick identifiers, so this cuts ~98% of the
+            // calls (2,414 -> 41 for 400 columns). No sqlPattern alternative can start where a parameter
+            // starts, so output is unchanged. Bounded on purpose: an unbounded run exhausts PCRE's
+            // backtrack limit on multi-MB SQL with the JIT off, and caps of 192+ exceed PCRE's compiled
+            // pattern size limit.
             . '|(?P<other>(?:' . $this->sqlPattern . '){1,64}+|' . self::SPECIAL . ')'
             . '~s';
     }
@@ -116,7 +118,13 @@ final class Parser
 
     private function getMySQLStringLiteralPattern(string $delimiter): string
     {
-        return $delimiter . '((\\\\.)|(?![' . $delimiter . '\\\\]).)*' . $delimiter;
+        // Upstream: '((\\.)|(?![\'\\]).)*'. Same language (runs of non-delimiter, non-backslash bytes,
+        // or a backslash followed by any byte), unrolled and possessive. Upstream's form costs a PCRE
+        // backtrack frame per byte, which limits a literal to ~6 KB (1,750 escapes) under the JIT.
+        // With up to 64 tokens per preg_match() call those frames would accumulate across all 64
+        // literals, so 64 adjacent 1 KB literals would fail where upstream does not. This form costs a
+        // frame per escape sequence only: 64 adjacent literals of 31,000 escapes each still parse.
+        return $delimiter . '[^' . $delimiter . '\\\\]*+(?:\\\\.[^' . $delimiter . '\\\\]*+)*+' . $delimiter;
     }
 
     private function getAnsiSQLStringLiteralPattern(string $delimiter): string

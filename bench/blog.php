@@ -23,7 +23,8 @@ final class VariantParser
     public function __construct(bool $possessive, ?int $cap)
     {
         $special = ':\?\'"`\\[\\-\\/';
-        $mysql   = static fn (string $d): string => $d . '((\\\\.)|(?![' . $d . '\\\\]).)*' . $d;
+        // Stack-free MySQL literal, same as the shipped parser (see src/SQL/Parser.php).
+        $mysql   = static fn (string $d): string => $d . '[^' . $d . '\\\\]*+(?:\\\\.[^' . $d . '\\\\]*+)*+' . $d;
         $sql     = '(' . implode('|', [
             $mysql("'"),
             $mysql('"'),
