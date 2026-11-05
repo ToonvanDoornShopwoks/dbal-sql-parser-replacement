@@ -15,6 +15,47 @@ version changes only the token pattern:
 - The cap is deliberate: an unbounded run exhausts the PCRE JIT stack on multi-MB SQL, and caps of
   256+ exceed PCRE's compiled pattern size limit.
 
+## How it works
+
+### The problem
+
+Before Doctrine runs a query, it scans the SQL text to find the parameter placeholders (`:name` and
+`?`) so it can bind values to them. Everything else in the query is just copied through unchanged.
+
+The upstream parser reads the SQL one small piece at a time. Each piece is a backtick name like
+`` `product`.`id` ``, a string literal, a comment, or a chunk of ordinary text. Every piece costs a
+separate `preg_match()` call.
+
+Normal queries have only a handful of pieces, so this is fine. Shopware is different: its queries
+often have `SELECT` lists with hundreds of backtick column names. A single query then means hundreds
+of regex calls, and each call has fixed overhead. Most of the time goes into starting the regex
+engine over and over just to say "not a parameter, keep going".
+
+### The fix
+
+Only the regex pattern changes. The parsing logic stays the same.
+
+1. **Take up to 64 boring pieces in one call.** Before, one call matched one non-parameter piece.
+   Now one call can match a run of up to 64 of them in a row, stopping as soon as a parameter shows
+   up. A 400-column `SELECT` goes from hundreds of calls to a few dozen, about 94% fewer.
+2. **Don't second-guess plain text.** The pattern for ordinary SQL text is now possessive (`++`
+   instead of `+`). Once the regex engine has grabbed a stretch of plain text, it keeps it and never
+   backs up to try a shorter match. That backing up could never succeed here anyway, so this only
+   removes wasted work.
+
+### Why the output is identical
+
+None of the non-parameter piece types can begin where a parameter begins, so grouping them can never
+swallow a `:name` or `?` by accident. The parser finds exactly the same parameters, and the SQL glued
+back together is byte-for-byte the same (see [Safety](#safety) for how this is tested).
+
+### Why exactly 64
+
+- **No limit:** on very large SQL (multi-MB inserts), PHP's JIT-compiled regex engine runs out of
+  stack and fails.
+- **256 or more:** the compiled regex grows past PCRE's maximum pattern size.
+- **64:** big enough to remove almost all the calls, small enough to stay clear of both limits.
+
 ## Install
 
 ```shell
