@@ -4,11 +4,15 @@ Drop-in replacement for `Doctrine\DBAL\SQL\Parser` (doctrine/dbal 4.3–4.5). It
 Composer `files` autoloading, so the class is declared before Composer would ever load the vendor
 copy. No patching of `vendor/` required.
 
+> **Upstreamed.** The same patterns were merged into Doctrine DBAL in
+> [doctrine/dbal#7596](https://github.com/doctrine/dbal/pull/7596) for DBAL 4.6.0. This package is a
+> backport of that parser for DBAL 4.3–4.5. Once you are on DBAL 4.6.0, remove this package.
+
 The upstream parser calls `preg_match()` once per token. Shopware builds very wide `SELECT` lists
 (hundreds of backtick identifiers), so a single query can cost hundreds of regex calls. This
 version changes only the regex patterns:
 
-- The `other` group consumes up to 64 non-parameter tokens per call (`(?:…){1,64}+`). No non-parameter
+- The `other` group consumes up to 64 non-parameter tokens per call (`(?&token){1,64}+`). No non-parameter
   alternative can start where a parameter starts, so the sequence of parameters and the reassembled
   SQL are identical to upstream.
 - `OTHER` is possessive (`[^…]++`): a run of plain SQL never has to give characters back.
@@ -16,8 +20,14 @@ version changes only the regex patterns:
   Upstream's form costs a PCRE backtrack frame per byte; with 64 tokens per call those frames would
   add up and 64 adjacent 1 KB literals would fail where upstream does not. The new form costs a
   frame per escape sequence only.
+- The token is a `(?(DEFINE)(?<token>…))` subroutine, not a repeated group. PCRE compiles `{1,64}` of
+  a group into 64 copies; the subroutine is compiled once, so first use per process costs about the
+  same as upstream, and each token keeps its own stack budget.
+- The multi-line comment and bracket identifier patterns are unrolled and possessive too. This fixes
+  an upstream bug: an unterminated `/*` of about 80 bytes throws `Backtrack limit exhausted`.
+- ANSI string literals are possessive (`'[^']*+'`).
 - The cap is deliberate: an unbounded run exhausts PCRE's backtrack limit on multi-MB SQL when the
-  JIT is off, and caps of 192+ exceed PCRE's compiled pattern size limit.
+  JIT is off.
 
 ## How it works
 
@@ -62,8 +72,7 @@ back together is byte-for-byte the same (see [Safety](#safety) for how this is t
 
 - **No limit:** on very large SQL (multi-MB inserts), PCRE hits its backtrack limit when the JIT is
   disabled and the parse fails.
-- **192 or more:** the compiled regex grows past PCRE's maximum pattern size.
-- **64:** big enough to remove about 98% of the calls, small enough to stay clear of both limits.
+- **64:** big enough to remove about 98% of the calls, small enough to stay clear of that limit.
 
 ## Install
 
@@ -75,15 +84,15 @@ Nothing else is needed. If you previously applied the equivalent `vendor/` patch
 
 ## Results
 
-`php bench/bench.php`, 400-column Shopware-style SELECT (18 KB), PHP 8.3:
+`php bench/bench.php`, 400-column Shopware-style SELECT (18 KB), PHP 8.3.29, JIT on:
 
 | Parser      | per parse |
 |-------------|-----------|
-| upstream    | 0.485 ms  |
-| replacement | 0.022 ms  |
+| upstream    | 0.560 ms  |
+| replacement | 0.030 ms  |
 
-The full write-up with charts, the JIT-off numbers, the cap sweep and the string-literal story is in
-[docs/blog-post.md](docs/blog-post.md). `php bench/blog.php` regenerates its data.
+For the full numbers (JIT on and off, five statement sizes, first-use cost) see
+[doctrine/dbal#7596](https://github.com/doctrine/dbal/pull/7596).
 
 ## Safety
 
@@ -95,7 +104,10 @@ The full write-up with charts, the JIT-off numbers, the cap sweep and the string
   SELECTs, a multi-MB INSERT, comments/strings/casts, 64 adjacent 1 KB string literals, 200 random
   token soups and 2,000 quote/backslash soups, in MySQL and ANSI mode. It also parses 64 adjacent
   256 KB literals, which upstream cannot.
-- `tests/UpstreamParserTest.php` is Doctrine's own `ParserTest` run against the replacement.
+- `tests/UpstreamParserTest.php` is Doctrine's own `ParserTest` run against the replacement, plus the
+  `testLargeStatements` cases from doctrine/dbal#7596 (unterminated and adjacent comments, large and
+  adjacent bracket identifiers and MySQL literals, parameters around the 64-token boundary, a
+  multi-megabyte statement). Run the suite with `-d pcre.jit=0` too.
 
 ```shell
 composer install && vendor/bin/phpunit

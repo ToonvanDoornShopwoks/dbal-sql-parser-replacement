@@ -1,3 +1,5 @@
 This software contains code from:
 
 * Doctrine DBAL 4.4.5 (src/SQL/Parser.php, tests/SQL/ParserTest.php), MIT, https://github.com/doctrine/dbal
+
+* doctrine/dbal#7596 (src/SQL/Parser.php patterns, tests/SQL/ParserTest.php testLargeStatements), MIT, https://github.com/doctrine/dbal/pull/7596

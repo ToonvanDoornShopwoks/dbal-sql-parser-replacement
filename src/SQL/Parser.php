@@ -6,8 +6,8 @@ namespace Doctrine\DBAL\SQL;
 
 // Drop-in replacement for doctrine/dbal 4.3-4.5 src/SQL/Parser.php, loaded early through Composer
 // "files" autoloading so it is declared before Composer could load the vendor copy.
-// Only the OTHER constant, the "other" group of $tokenPattern and the MySQL string literal pattern
-// differ from upstream 4.4.5.
+// Backport of doctrine/dbal#7596 (merged for DBAL 4.6.0): only the regular expression patterns
+// differ from upstream 4.4.5. The parse() loop is unchanged.
 
 use Doctrine\DBAL\SQL\Parser\Exception;
 use Doctrine\DBAL\SQL\Parser\Exception\RegularExpressionError;
@@ -37,15 +37,20 @@ final class Parser
     private const SPECIAL_CHARS = ':\?\'"`\\[\\-\\/';
 
     private const BACKTICK_IDENTIFIER  = '`[^`]*`';
-    private const BRACKET_IDENTIFIER   = '(?<!\b(?i:ARRAY))\[(?:[^\]])*\]';
+    private const BRACKET_IDENTIFIER   = '(?<!\b(?i:ARRAY))\[[^\]]*+\]';
     private const MULTICHAR            = ':{2,}';
     private const NAMED_PARAMETER      = ':[a-zA-Z0-9_]+';
     private const POSITIONAL_PARAMETER = '(?<!\\?)\\?(?!\\?)';
     private const ONE_LINE_COMMENT     = '--[^\r\n]*';
-    private const MULTI_LINE_COMMENT   = '/\*([^*]+|\*+[^/*])*\**\*/';
+    // Unrolled and possessive. Upstream's nested quantifiers throw "Backtrack limit exhausted" on an
+    // unterminated /* of ~80 bytes; this form leaves the syntax error to the database.
+    private const MULTI_LINE_COMMENT   = '/\*[^*]*+\*++(?:[^/*][^*]*+\*++)*+/';
     private const SPECIAL              = '[' . self::SPECIAL_CHARS . ']';
     // Possessive: a run of plain SQL never needs to give characters back.
     private const OTHER                = '[^' . self::SPECIAL_CHARS . ']++';
+
+    // An unbounded run exhausts pcre.backtrack_limit on multi-megabyte statements with the JIT off.
+    private const MAX_TOKENS_PER_MATCH = 64;
 
     private readonly string $sqlPattern;
     private readonly string $tokenPattern;
@@ -80,10 +85,11 @@ final class Parser
             // Consume up to 64 non-parameter tokens per preg_match() call instead of one.
             // Shopware's long SELECT lists are hundreds of backtick identifiers, so this cuts ~98% of the
             // calls (2,414 -> 41 for 400 columns). No sqlPattern alternative can start where a parameter
-            // starts, so output is unchanged. Bounded on purpose: an unbounded run exhausts PCRE's
-            // backtrack limit on multi-MB SQL with the JIT off, and caps of 192+ exceed PCRE's compiled
-            // pattern size limit.
-            . '|(?P<other>(?:' . $this->sqlPattern . '){1,64}+|' . self::SPECIAL . ')'
+            // starts, so output is unchanged. The token is a (?&token) subroutine rather than a repeated
+            // group: PCRE compiles {1,64} of a group into 64 copies, which made first use per process
+            // ~13x more expensive and let the 64 tokens of a batch share one stack budget.
+            . '|(?P<other>(?&token){1,' . self::MAX_TOKENS_PER_MATCH . '}+|' . self::SPECIAL . ')'
+            . '(?(DEFINE)(?<token>' . $this->sqlPattern . '))'
             . '~s';
     }
 
@@ -129,6 +135,6 @@ final class Parser
 
     private function getAnsiSQLStringLiteralPattern(string $delimiter): string
     {
-        return $delimiter . '[^' . $delimiter . ']*' . $delimiter;
+        return $delimiter . '[^' . $delimiter . ']*+' . $delimiter;
     }
 }
