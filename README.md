@@ -76,8 +76,11 @@ back together is byte-for-byte the same (see [Safety](#safety) for how this is t
 
 ## Install
 
+The package is not on Packagist. Add the GitHub repository to your project, then require it:
+
 ```shell
-composer require toonvandoornshopwoks/dbal-sql-parser-replacement
+composer config repositories.dbal-sql-parser-replacement vcs https://github.com/ToonvanDoornShopwoks/dbal-sql-parser-replacement
+composer require toonvandoornshopwoks/dbal-sql-parser-replacement:^1.1
 ```
 
 Nothing else is needed. If you previously applied the equivalent `vendor/` patch, remove it.
